@@ -5,10 +5,11 @@ if isClient() then
 
     ---update isoObjects when chunk loads
     local function LoadPowerbank(isoObject)
-        -- local gen = isoObject:getSquare():getGenerator()
-        -- if gen ~= nil then gen:getCell():addToProcessIsoObjectRemove(gen) end
-        isoObject:getCell():addToProcessIsoObjectRemove(isoObject)
-        isoObject:getContainer():setAcceptItemFunction("AcceptItemFunction.ISA_Batteries")
+        -- Proteção B42: Verifica se o objeto e o contentor existem antes de mexer
+        if isoObject and isoObject:getContainer() then
+            isoObject:getCell():addToProcessIsoObjectRemove(isoObject)
+            isoObject:getContainer():setAcceptItemFunction("AcceptItemFunction.ISA_Batteries")
+        end
     end
     MapObjects.OnLoadWithSprite("solarmod_tileset_01_0", LoadPowerbank, 6)
 
@@ -16,8 +17,14 @@ else
 
     ---update isoObjects when chunk loads
     local function LoadPowerbank(isoObject)
-        ISA.PBSystem_Server:loadIsoObject(isoObject)
-        isoObject:getContainer():setAcceptItemFunction("AcceptItemFunction.ISA_Batteries")
+        if ISA.PBSystem_Server then
+            ISA.PBSystem_Server:loadIsoObject(isoObject)
+        end
+        
+        -- Proteção B42
+        if isoObject and isoObject:getContainer() then
+            isoObject:getContainer():setAcceptItemFunction("AcceptItemFunction.ISA_Batteries")
+        end
     end
     MapObjects.OnLoadWithSprite("solarmod_tileset_01_0", LoadPowerbank, 6)
 
@@ -25,7 +32,11 @@ else
     local function OnNewWithSprite(isoObject)
         local isaType = ISA.WorldUtil.getType(isoObject)
         local square = isoObject:getSquare()
-        if not square then error("ISA: OnNewWithSprite no square") return end
+        
+        if not square then 
+            print("ISA WARNING: OnNewWithSprite no square found") 
+            return 
+        end
 
         if isaType == "PowerBank" then
             local index = isoObject:getObjectIndex()
@@ -33,13 +44,13 @@ else
             square:transmitRemoveItemFromSquare(isoObject)
             RandomWorldSpawns.addToWorld(square, spriteName, index)
         else
-            square:getSpecialObjects():add(isoObject)
+            -- Na B42, objetos especiais são geridos de forma diferente, mas isto deve manter-se funcional
+            if square:getSpecialObjects() then
+                square:getSpecialObjects():add(isoObject)
+            end
         end
     end
-
-    local MapObjects = MapObjects
-    for sprite, type in pairs(ISA.WorldUtil.ISATypes) do
-        MapObjects.OnNewWithSprite(sprite, OnNewWithSprite, 5)
-    end
-
+    
+    -- Ouve o evento de criação de objeto no mapa
+    MapObjects.OnNewWithSprite("solarmod_tileset_01_0", OnNewWithSprite, 6)
 end

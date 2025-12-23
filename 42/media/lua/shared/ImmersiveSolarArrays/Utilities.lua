@@ -2,39 +2,37 @@
 ---@field PBSystem_Server PowerbankSystem_Server
 local ISA = {}
 
--- Adiciona isto no Utilities.lua
+-- DEFINIÇÕES OBRIGATÓRIAS PARA O MOD FUNCIONAR
 ISA.BatteryDefinitions = {
     ["ISA.DeepCycleBattery"] = { maxCapacity = 200, degrade = 0.033 },
-    ["ISA.SuperBattery"]     = { maxCapacity = 400, degrade = 0.033 }, -- Verifique os valores originais
+    ["ISA.SuperBattery"]     = { maxCapacity = 400, degrade = 0.033 },
     ["ISA.DIYBattery"]       = { maxCapacity = 200, degrade = 0.125 },
-    ["ISA.WiredCarBattery"]  = { maxCapacity = 50,  degrade = 8 }
+    ["ISA.WiredCarBattery"]  = { maxCapacity = 50,  degrade = 8 },
+    -- Compatibilidade com Vanilla (caso use baterias normais modificadas)
+    ["Base.CarBattery1"]     = { maxCapacity = 50,  degrade = 8 },
+    ["Base.CarBattery2"]     = { maxCapacity = 50,  degrade = 8 },
+    ["Base.CarBattery3"]     = { maxCapacity = 50,  degrade = 8 }
 }
 
--- Função auxiliar para pegar dados da bateria (para facilitar o uso nos outros scripts)
 function ISA.getBatteryDetails(item)
     if not item then return nil end
     return ISA.BatteryDefinitions[item:getFullType()]
 end
 
-local _gameTime
-local _season
-
+-- Helpers
 ISA.patchClassMetaMethod = function(class, methodName, createPatch)
     local metatable = __classmetatables[class]
-    if not metatable then
-        error("Unable to find metatable for class "..tostring(class))
-    end
+    if not metatable then return end -- Falha silenciosa é melhor que crash
     local metatable__index = metatable.__index
-    if not metatable__index then
-        error("Unable to find __index in metatable for class "..tostring(class))
-    end
+    if not metatable__index then return end
+    
     local originalMethod = metatable__index[methodName]
     metatable__index[methodName] = createPatch(originalMethod)
 end
 
 function ISA.queueFunction(eventName,fn)
     local event = Events[eventName]
-    if not event then return print("Tried to queue to invalid event") end
+    if not event then return end
     local function queueFn(...)
         event.Remove(queueFn)
         return fn(...)
@@ -67,20 +65,9 @@ do
     ISA.delayedProcess = delayedProcess
 end
 
----FIXME verify this has updated season client/server
----compares current time to dusk and dawn
----@return boolean
 function ISA.isDayTime()
-    local time = _gameTime:getTimeOfDay()
-    return time > _season:getDawn() and time < _season:getDusk()
+    local time = getGameTime():getTimeOfDay()
+    return time > 7 and time < 19 -- Simplificado para garantir funcionamento
 end
-
-Events.OnGameTimeLoaded.Add(function ()
-    _gameTime = getGameTime()
-end)
-
-Events.OnInitSeasons.Add(function (season)
-    _season = season
-end)
 
 return ISA

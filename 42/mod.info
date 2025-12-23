@@ -1,9 +1,10 @@
+name=Immersive Solar Arrays (B42 Fix)
 id=ISA-Fix
-name=Immersive Solar Arrays [BETA]-Fix
-description=此mod对Immersive Solar Arrays [BETA]的一些错误和异常进行了修复，使得物品制作可以正常进行，平滑了技能等级对太阳能电池性能的影响。
+description=Correção e adaptação do sistema de Energia Solar para a Build 42.
 poster=poster.png
+icon=media/textures/Item_SolarPanel.png
+versionMin=42.0.0
+require=TargetSquareOnLoad
 pack=solarmod_tileset
 tiledef=solarmodtiledefs 575
-icon=media/textures/Item_SolarPanel.png
-require=\TargetSquareOnLoad
-author=wkwasd
+author=wkwasd (Fixed by You)

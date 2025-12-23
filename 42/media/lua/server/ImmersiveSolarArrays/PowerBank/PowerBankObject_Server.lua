@@ -1,5 +1,6 @@
 --[[
     "isa_powerbank" server luaObject
+    FIX B42: Fluid Container support, safe fuel check, dynamic battery stats
 --]]
 
 if isClient() then return end
@@ -26,490 +27,296 @@ function PowerBank:initNew()
     self.npanels = 0
     self.drain = 0
     self.lastHour = 0
-    self.conGenerator = false ---FIXME should be nil, nil didn't save / transmit data?
+    self.conGenerator = false 
 end
 
----called from loadIsoObject function when making new globalObject & luaObject. This is called for IsoObjects that did not have a Lua object when loaded.
----triggered by: Events.OnObjectAdded, MapObjects.OnLoadWithSprite
 function PowerBank:stateFromIsoObject(isoObject)
     self:initNew()
     self:calculateBatteryStats(isoObject:getContainer())
     self:autoConnectBackup()
-    -- self:createGenerator() --if generator...
-    self:loadGenerator()
+    self:checkPanels()
     self:updateDrain()
     self:updateSprite()
     self:saveData(true)
 end
 
----called from loadIsoObject function when luaObject exists, triggered by: Events.OnObjectAdded, MapObjects.OnLoadWithSprite
 function PowerBank:stateToIsoObject(isoObject)
-    self:toModData(isoObject:getModData())
-    isoObject:transmitModData()
-    self:loadGenerator()
+    self:updateBatteries(isoObject:getContainer())
     self:updateSprite()
+    isoObject:getModData().isa_pb_id = self.system:getObjectIndex(self)
+    isoObject:transmitModData()
 end
 
-function PowerBank:fromModData(modData)
-    for i, key in ipairs(self.luaSystem.savedObjectModData) do
-        self[key] = modData[key]
+-- =============================================================================
+-- FIX B42: HELPER DE COMBUSTÍVEL SEGURO
+-- =============================================================================
+local function getGeneratorFuelSafe(generator)
+    if not generator then return 0 end
+    
+    -- Tenta o método antigo (Legacy B41)
+    if generator.getFuel and generator:getFuel() then
+        return generator:getFuel()
     end
-end
-
-function PowerBank:toModData(modData)
-    for i, key in ipairs(self.luaSystem.savedObjectModData) do
-        modData[key] = self[key]
+    
+    -- Tenta o novo sistema de fluidos (Build 42+)
+    if generator.getFluidContainer and generator:getFluidContainer() then
+        return generator:getFluidContainer():getAmount()
     end
+    
+    -- Se falhar ambos (ex: generator desconectado ou classe mudada), retorna 0 para não crashar
+    return 0 
 end
+-- =============================================================================
 
-function PowerBank:saveData(transmit)
-    local isoObject = self:getIsoObject()
-    if not isoObject then return end
-    self:toModData(isoObject:getModData())
-    if transmit then
-        isoObject:transmitModData()
-    end
-end
+function PowerBank:updateConGenerator()
+    local currentHour = math.floor(getGameTime():getWorldAgeHours())
+    if self.lastHour == currentHour then return end
+    
+    local conGenerator, square = self:getConGenerator()
+    
+    if conGenerator then
+        -- Na B42, update() manual pode não ser estritamente necessário, mas mantemos por segurança
+        if conGenerator.update then conGenerator:update() end
 
-function PowerBank:shouldDrain(isoPb)
-    if self.switchchanged then
-        self.switchchanged = nil
-    elseif not self.on then
-        return false
-    end
-    if self.conGenerator and self.conGenerator.ison then return false end
+        -- Verifica se o Failsafe (interruptor automático) está instalado no chão
+        if self.on and ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_15") then
+            local minfailsafe = self.drain
+            
+            -- Leitura segura do combustível
+            local fuelAmount = getGeneratorFuelSafe(conGenerator)
 
-    local world = getWorld()
-    if world:isHydroPowerOn() then
-        if isoPb then
-            if not isoPb:getSquare():isOutside() then return false end
-        else
-            if world:getMetaGrid():getRoomAt(self.x, self.y, self.z) then return false end
-        end
-    end
-    return true
-end
-
-PowerBank.fuelToSolarRate = 800
-function PowerBank:getDrainVanilla(square)
-    local gen = square:getGenerator()
-    if gen:isActivated() then
-        gen:setSurroundingElectricity()
-        return gen:getTotalPowerUsing() * self.fuelToSolarRate
-    else
-        return PowerBank.getTotalWhenoff(gen) * self.fuelToSolarRate
-    end
-end
-
-function PowerBank.getTotalWhenoff(generator)
-    generator:setActivated(true)
-    local tpu = generator:getTotalPowerUsing()
-    generator:setActivated(false)
-    if generator:getSquare():getBuilding() ~= nil then generator:getSquare():getBuilding():setToxic(false) end
-    return tpu
-end
-
-function PowerBank:updateDrain()
-    local square = self:getSquare()
-    if not square then return end
-    if sandbox.DrainCalc == 1 then
-        self.drain = solarscan(square, false, true, false, 0)
-    else
-        self.drain = PowerBank:getDrainVanilla(square)
-    end
-end
-
----@param container ItemContainer
----@param modCharge number
-function PowerBank:updateBatteries(container, modCharge)
-    local items = container:getItems()
-    for i = items:size() - 1, 0, -1  do
-        local item = items:get(i)
-        -- bugfix
-        if container:isItemAllowed(item) then
-            item:setCurrentUsesFloat(modCharge)
-        else
-            container:Remove(item)
-            self:getSquare():AddWorldInventoryItem(item, 0.5, 0.5, 0)
-            print("ISA: Removed invalid item from Battery Bank. ->", item:getFullType())
-        end
-    end
-    -- container:setDirty(true)
-    container:setDrawDirty(true)
-end
-
--- SPowerbank.batteryDegrade = {
---     ["WiredCarBattery"] = 7, --ModData
---     ["DIYBattery"] = 0.125,
---     ["DeepCycleBattery"] = 0.033,
---     ["SuperBattery"] = 0.033,
--- }
-
---condition is an int
-function PowerBank:degradeBatteries(container)
-    if sandbox.batteryDegradeChance == 0 then return end
-
-    local ZombRand, math = ZombRand, math
-    local mod = sandbox.batteryDegradeChance * ZombRand(8, 13) / 1000
-
-    local items = container:getItems()
-    for i = items:size() - 1, 0, -1 do repeat
-        local item = items:get(i)
-        local degradeVal = item:getModData()["ISA_BatteryDegrade"] or 0 --or self.batteryDegrade[item:getType()]
-        if degradeVal <= 0 then break end
-        -- average of 1M rolls / 10: 5.5 / 3: 2 / 1.6: 1.37364 / 0.9: 0.90082 / 0.033: 0.03280
-        degradeVal = degradeVal * mod
-        degradeVal = degradeVal > 1 and 1 + math.floor(ZombRand(degradeVal * 100) / 100) or math.floor(ZombRand(100 / degradeVal) / 100 ) == 0 and 1 or 0
-        if degradeVal <= 0 then break end
-        item:setCondition(item:getCondition() - degradeVal)
-    until true
-    end
-end
-
-function PowerBank:calculateBatteryStats(container)
-    local batteries = 0
-    local capacity = 0
-    local charge = 0
-
-    local items = container:getItems()
-    for i = 0, items:size() - 1 do
-        local item = items:get(i)
-        local maxCapacity = item:getModData().ISA_maxCapacity
-        if maxCapacity then
-            local condition = item:getCondition()
-            if condition > 0 then
-                batteries = batteries + 1
-                local cap = maxCapacity * (1 - math.pow((1 - (condition/100)),6))
-                capacity = capacity + cap
-                charge = charge + cap * item:getCurrentUsesFloat()
-            end
-        else
-            print("ISA: Warning invalid item in Battery Bank. -> ", item:getFullType())
-        end
-    end
-
-    self.batteries = batteries
-    self.maxcapacity = capacity
-    self.charge = charge
-end
-
-function PowerBank:getPanelStatus(panel)
-    local x,y,z = panel:getX(), panel:getY(), panel:getZ()
-    if IsoUtils.DistanceToSquared(x, y, self.x, self.y) <= 400.0 and math.abs(z - self.z) <= 3 then
-        for _, panelXYZ in ipairs(self.panels) do
-            if x == panelXYZ.x and y == panelXYZ.y and z == panelXYZ.z then return "connected" end
-        end
-        return "not connected"
-    else
-        return "far"
-    end
-end
-
----checks the square for a panel object and returns the object and status
-function PowerBank:getPanelStatusOnSquare(square)
-    local panel = ISA.WorldUtil.findTypeOnSquare(square, "Panel")
-    if panel ~= nil then
-        return panel, square:isOutside() and self:getPanelStatus(panel) or "indoors"
-    end
-    return nil, ""
-end
-
----bugfix, verify panels
-function PowerBank:checkPanels()
-    local getSquare = getSquare
-
-    local dup = {}
-    for i = #self.panels, 1, -1 do
-        local panel = self.panels[i]
-        local square = getSquare(panel.x, panel.y, panel.z)
-        if square ~= nil then --TODO check if chunk loaded
-            local panelObj, status = self:getPanelStatusOnSquare(square)
-            if not panelObj or status ~= "connected" or dup[square] then
-                table.remove(self.panels, i)
-                if panelObj ~= nil then
-                    panelObj:getModData().pbLinked = nil
-                    panelObj:transmitModData()
+            if conGenerator:isActivated() then
+                -- Se a bateria já carregou o suficiente, desliga o gerador
+                if self.charge > minfailsafe then 
+                    conGenerator:setActivated(false)
                 end
-            end
-            dup[square] = true
-        end
-    end
-    self.npanels = #self.panels
-end
-
----@param modChanrge number
----@return string?
-function PowerBank:getSpriteForOverlay(modChanrge)
-    if self.batteries <= 0 then return nil end
-    if modChanrge == nil then modChanrge = self.maxcapacity > 0 and self.charge / self.maxcapacity or 0 end
-    if modChanrge < 0.10 then
-        --show 0 charge
-        if self.batteries < 5 then
-            --show bottom shelf
-            return "solarmod_tileset_01_1"
-        elseif self.batteries < 9 then
-            --show two shelves
-            return "solarmod_tileset_01_2"
-        elseif self.batteries < 13 then
-            --show three shelves
-            return "solarmod_tileset_01_3"
-        elseif self.batteries < 17 then
-            --show four shelves
-            return "solarmod_tileset_01_4"
-        else
-            --show five shelves
-            return "solarmod_tileset_01_5"
-        end
-    elseif modChanrge < 0.35 then
-        --show 25 charge
-        if self.batteries < 5 then
-            --show bottom shelf
-            return "solarmod_tileset_01_16"
-        elseif self.batteries < 9 then
-            --show two shelves
-            return "solarmod_tileset_01_20"
-        elseif self.batteries < 13 then
-            --show three shelves
-            return "solarmod_tileset_01_24"
-        elseif self.batteries < 17 then
-            --show four shelves
-            return "solarmod_tileset_01_28"
-        else
-            --show five shelves
-            return "solarmod_tileset_01_32"
-        end
-    elseif modChanrge < 0.65 then
-        -- show 50 charge
-        if self.batteries < 5 then
-            --show bottom shelf
-            return "solarmod_tileset_01_17"
-        elseif self.batteries < 9 then
-            --show two shelves
-            return "solarmod_tileset_01_21"
-        elseif self.batteries < 13 then
-            --show three shelves
-            return "solarmod_tileset_01_25"
-        elseif self.batteries < 17 then
-            --show four shelves
-            return "solarmod_tileset_01_29"
-        else
-            --show five shelves
-            return "solarmod_tileset_01_33"
-        end
-    elseif modChanrge < 0.95 then
-        -- show 75 charge
-        if self.batteries < 5 then
-            --show bottom shelf
-            return "solarmod_tileset_01_18"
-        elseif self.batteries < 9 then
-            --show two shelves
-            return "solarmod_tileset_01_22"
-        elseif self.batteries < 13 then
-            --show three shelves
-            return "solarmod_tileset_01_26"
-        elseif self.batteries < 17 then
-            --show four shelves
-            return "solarmod_tileset_01_30"
-        else
-            --show five shelves
-            return "solarmod_tileset_01_34"
-        end
-    else
-        --show 100 charge
-        if self.batteries < 5 then
-            --show bottom shelf
-            return "solarmod_tileset_01_19"
-        elseif self.batteries < 9 then
-            --show two shelves
-            return "solarmod_tileset_01_23"
-        elseif self.batteries < 13 then
-            --show three shelves
-            return "solarmod_tileset_01_27"
-        elseif self.batteries < 17 then
-            --show four shelves
-            return "solarmod_tileset_01_31"
-        else
-            --show five shelves
-            return "solarmod_tileset_01_35"
-        end
-    end
-end
-
-function PowerBank:updateSprite(modCharge)
-    local newSprite = self:getSpriteForOverlay(modCharge)
-    local isoObject = self:getIsoObject()
-    local attached = isoObject:getAttachedAnimSprite()
-
-    if attached ~= nil then
-        for i = 0, attached:size() - 1 do
-            local attachedSprite = attached:get(i)
-            local attachedName = attachedSprite:getName()
-            if attachedName == newSprite then return end
-            if attachedName and string.find(attachedName, "^solarmod_tileset_01_") then
-                isoObject:RemoveAttachedAnim(i)
-                break
-            end
-        end
-    end
-    if newSprite ~= nil then
-        isoObject:addAttachedAnimSpriteByName(newSprite)
-    end
-end
-
----FIXME update
-function PowerBank:createGenerator()
-    self:noise("Creating Generator")
-    -- local square = self:getSquare()
-    -- local generator = IsoGenerator.new(instanceItem("ISA.PowerBank_test"), square:getCell(), square) --FIXME test invisible
-    -- generator:setSprite(nil)
-    -- generator:transmitCompleteItemToClients()
-    -- generator:setCondition(100)
-    -- generator:setFuel(100)
-    -- generator:setConnected(true)
-    -- generator:getCell():addToProcessIsoObjectRemove(generator)
-end
-
----FIXME update
-function PowerBank:removeGenerator()
-    local square = self:getSquare()
-    local gen = square:getGenerator()
-    if gen then
-        gen:setActivated(false)
-        gen:remove() --index error
-        --square:transmitRemoveItemFromSquare(gen) --index error
-    end
-end
-
----FIXME should not include next charge or duplicate current dCharge?
-function PowerBank:updateGenerator(dCharge)
-    if dCharge == nil then
-        dCharge = self.luaSystem:getModifiedSolarOutput(self.npanels) - self.drain
-        if sandbox.ChargeFreq == 1 then
-            dCharge = dCharge / 6
-        end
-    end
-    local activate = self.on and self.charge + dCharge > 0
-    local square = self:getSquare()
-    square:getGenerator():setActivated(activate)
-    if square:getBuilding() ~= nil then square:getBuilding():setToxic(false) end
-end
-
---if freezer timers, Powerbank generator condition / fuel are wrong check here
-function PowerBank:loadGenerator()
-    -- local square = self:getSquare()
-    -- self:fixIndex()
-    -- local gen = square:getGenerator()
-    -- gen:setSurroundingElectricity()
-    -- gen:getCell():addToProcessIsoObjectRemove(gen)
-    -- self:updateGenerator()
-    -- self:updateConGenerator()
-
-    ---new load
-    local generator = self:getIsoObject()
-    generator:setSurroundingElectricity()
-    generator:getCell():addToProcessIsoObjectRemove(generator)
-    self:updateGenerator()
-    self:updateConGenerator()
-end
-
----FIXME update
-function PowerBank:fixIndex()
-    if self.fixIndex_done then return end
-    self.fixIndex_done = true
-
-    local square = self:getSquare()
-    local special = square:getSpecialObjects()
-    local bank,hasGen
-    local i = 0
-    while i < special:size() do
-        local obj = special:get(i)
-        if not bank and obj:getTextureName() == "solarmod_tileset_01_0" then
-            bank = true
-        elseif instanceof(obj,"IsoGenerator") then
-            if bank and not hasGen then
-                hasGen = true
             else
-                obj:remove()
-                i=i-1
-            end
-        end
-        i = i +1
-    end
-    if self.conGenerator then
-        local conGenerator,conSquare = self:getConGenerator()
-        if conSquare and not self.luaSystem:getValidBackupOnSquare(conSquare) then
-            self:autoConnectBackup()
-        end
-    end
-    if not hasGen then self:createGenerator() end
-end
-
-function PowerBank:connectBackupGenerator(generator)
-    self.conGenerator = {}
-    self.conGenerator.x = generator:getX()
-    self.conGenerator.y = generator:getY()
-    self.conGenerator.z = generator:getZ()
-    self.conGenerator.ison = generator:isActivated()
-    self.lastHour = 0
-    self:saveData(true)
-end
-
-function PowerBank:disconnectBackupGenerator(generator)
-    self.conGenerator = false
-    self:saveData(true)
-end
-
-function PowerBank:autoConnectBackup()
-    local area = ISA.WorldUtil.getValidBackupArea(3)
-
-    self.conGenerator = false
-    for ix = self.x - area.radius, self.x + area.radius do
-        for iy = self.y - area.radius, self.y + area.radius do
-            for iz = self.z - area.levels, self.z + area.levels do
-                if ix >= 0 and iy >= 0 and iz >= 0 then
-                    local isquare = IsoUtils.DistanceToSquared(self.x,self.y,self.z,ix,iy,iz) <= area.distance and getSquare(ix, iy, iz)
-                    local generator = isquare and self.luaSystem:getValidBackupOnSquare(isquare)
-                    if generator then
-                        self:connectBackupGenerator(generator)
-                        return
-                    end
+                -- Se a bateria está crítica E tem gasolina E o gerador não está quebrado -> Liga
+                if self.charge < minfailsafe and fuelAmount > 0 and conGenerator:getCondition() > 20 then 
+                    conGenerator:setActivated(true) 
                 end
             end
         end
+        self.lastHour = currentHour
+        self.conGenerator.ison = conGenerator:isActivated()
     end
 end
 
 function PowerBank:getConGenerator()
     if self.conGenerator then
-        local square = getSquare(self.conGenerator.x,self.conGenerator.y,self.conGenerator.z)
+        local square = getSquare(self.conGenerator.x, self.conGenerator.y, self.conGenerator.z)
         if square then
             local generator = square:getGenerator()
-            if not generator then self.conGenerator = false end
+            -- Se não achou gerador, limpa a referência
+            if not generator then 
+                self.conGenerator = false 
+                return nil, nil
+            end
             return generator, square
         end
     end
-    return nil
+    return nil, nil
 end
 
-function PowerBank:updateConGenerator()
-    local currentHour = math.floor(getGameTime():getWorldAgeHours())
-    if self.lastHour == currentHour then return end
-    local conGenerator,square = self:getConGenerator()
-    if conGenerator then
-
-        conGenerator:update()
-
-        if self.on and ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_15") then
-            local minfailsafe = self.drain
-            if conGenerator:isActivated() then
-                if self.charge > minfailsafe then conGenerator:setActivated(false)end
-            else
-                if self.charge < minfailsafe and conGenerator:getFuel() > 0 and conGenerator:getCondition() > 20 then conGenerator:setActivated(true) end
+function PowerBank:autoConnectBackup()
+    local isoObject = self:getIsoObject()
+    if not isoObject then return end
+    
+    local square = isoObject:getSquare()
+    if square then
+        -- Procura no próprio quadrado
+        local generator = square:getGenerator()
+        if generator then self:connectBackupGenerator(generator) return end
+        
+        -- Procura num raio de 1 tile (3x3)
+        for x = -1, 1 do
+            for y = -1, 1 do
+                local sq = getSquare(square:getX() + x, square:getY() + y, square:getZ())
+                if sq then
+                    generator = sq:getGenerator()
+                    if generator then self:connectBackupGenerator(generator) return end
+                end
             end
         end
-        self.lastHour = currentHour
-        -- if isActive ~= setActive then
-        self.conGenerator.ison = conGenerator:isActivated()
+    end
+end
+
+function PowerBank:connectBackupGenerator(generator)
+    if generator then
+        local square = generator:getSquare()
+        self.conGenerator = { x = square:getX(), y = square:getY(), z = square:getZ(), ison = generator:isActivated() }
+    end
+end
+
+-- =============================================================================
+-- FIX: CÁLCULO DE BATERIAS DINÂMICO (Lê Utilities.lua)
+-- =============================================================================
+function PowerBank:calculateBatteryStats(inventory)
+    if not inventory then return end
+    
+    local currentCapacity = 0
+    local maxCapacity = 0
+    local batteries = 0
+    local drain = 0
+
+    local items = inventory:getItems()
+    for i=0, items:size()-1 do
+        local item = items:get(i)
+        -- Busca os detalhes na tabela global que definimos no Utilities.lua
+        local details = ISA.BatteryDefinitions[item:getFullType()]
+        
+        if details then
+            batteries = batteries + 1
+            
+            -- Capacidade real baseada na condição do item (Bateria velha armazena menos)
+            local conditionPct = item:getCondition() / 100.0
+            local thisMaxCap = details.maxCapacity * conditionPct
+            
+            maxCapacity = maxCapacity + thisMaxCap
+            
+            -- Carga atual = Capacidade Máxima * O quanto está cheia (UsedDelta)
+            currentCapacity = currentCapacity + (thisMaxCap * item:getUsedDelta())
+            
+            -- Degradação natural da bateria
+            drain = drain + (details.degrade or 0)
+        end
+    end
+
+    self.batteries = batteries
+    self.maxcapacity = maxCapacity
+    self.charge = currentCapacity
+    self.drain = drain 
+end
+-- =============================================================================
+
+function PowerBank:updateDrain()
+    if self.on then
+        local isopb = self:getIsoObject()
+        if isopb then
+            -- Chama o scanner de consumo
+            local drain, npanels = solarscan(isopb:getSquare(), false, false)
+            self.drain = drain
+            self.npanels = npanels
+        end
+    else
+        self.drain = 0
+    end
+end
+
+function PowerBank:shouldDrain(isoObject)
+    -- Se estiver desligado, não drena
+    if not self.on then return false end
+    
+    -- Se o gerador de backup estiver ligado, usa o gerador, não a bateria
+    if self.conGenerator and self.conGenerator.ison then return false end
+    
+    -- Compatibilidade: Se a energia "Hydro" (Vanilla/Modded) estiver ativa, não usa bateria
+    if getWorld():isHydroPowerOn() then
+        if isoObject then
+            local square = isoObject:getSquare()
+            if square and not square:isOutside() then return false end
+        end
+    end
+    
+    return true
+end
+
+function PowerBank:updateBatteries(container, ratio)
+    if not container then return end
+    
+    -- Se não passou ratio, calcula
+    if not ratio then 
+        ratio = (self.maxcapacity > 0) and (self.charge / self.maxcapacity) or 0
+    end
+
+    local items = container:getItems()
+    for i=0, items:size()-1 do
+        local item = items:get(i)
+        if ISA.BatteryDefinitions[item:getFullType()] then
+            -- Atualiza visualmente a barra de carga da bateria
+            item:setUsedDelta(ratio)
+        end
+    end
+end
+
+function PowerBank:checkPanels()
+    if self.panels then
+        for i=#self.panels, 1, -1 do
+            local panelLoc = self.panels[i]
+            local square = getSquare(panelLoc.x, panelLoc.y, panelLoc.z)
+            if square then
+                -- Verifica se o painel ainda existe
+                if not ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_6") and 
+                   not ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_7") and
+                   not ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_8") and
+                   not ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_9") and
+                   not ISA.WorldUtil.findOnSquare(square, "solarmod_tileset_01_10") then
+                   
+                    table.remove(self.panels, i)
+                    self.npanels = self.npanels - 1
+                end
+            end
+        end
+    end
+end
+
+function PowerBank:updateSprite(modCharge)
+    local isoObject = self:getIsoObject()
+    if not isoObject then return end
+
+    if not modCharge then
+        modCharge = (self.maxcapacity > 0) and (self.charge / self.maxcapacity) or 0
+    end
+
+    -- Altera o sprite baseado na quantidade de baterias e carga (visual feedback)
+    if self.batteries == 0 then
+        isoObject:setSprite("solarmod_tileset_01_0")
+    elseif self.batteries <= 4 then
+        if modCharge > 0.5 then isoObject:setSprite("solarmod_tileset_01_1")
+        elseif modCharge > 0 then isoObject:setSprite("solarmod_tileset_01_16")
+        else isoObject:setSprite("solarmod_tileset_01_32") end
+    elseif self.batteries <= 8 then
+        if modCharge > 0.5 then isoObject:setSprite("solarmod_tileset_01_2")
+        elseif modCharge > 0 then isoObject:setSprite("solarmod_tileset_01_17")
+        else isoObject:setSprite("solarmod_tileset_01_33") end
+    elseif self.batteries <= 12 then
+        if modCharge > 0.5 then isoObject:setSprite("solarmod_tileset_01_3")
+        elseif modCharge > 0 then isoObject:setSprite("solarmod_tileset_01_18")
+        else isoObject:setSprite("solarmod_tileset_01_34") end
+    elseif self.batteries <= 16 then
+        if modCharge > 0.5 then isoObject:setSprite("solarmod_tileset_01_4")
+        elseif modCharge > 0 then isoObject:setSprite("solarmod_tileset_01_19")
+        else isoObject:setSprite("solarmod_tileset_01_35") end
+    else
+        if modCharge > 0.5 then isoObject:setSprite("solarmod_tileset_01_5")
+        elseif modCharge > 0 then isoObject:setSprite("solarmod_tileset_01_20")
+        else isoObject:setSprite("solarmod_tileset_01_40") end
+    end
+end
+
+-- Função placeholder para compatibilidade com o loop do sistema principal
+function PowerBank:updateGenerator(charge)
+    -- Na B42, não precisamos atualizar um gerador "falso" constantemente se gerenciarmos a eletricidade via IsoGenerator real.
+    -- Se o mod original usava um gerador oculto para prover energia à casa, a lógica ficaria aqui.
+    -- Como corrigimos o updateConGenerator, isso foca no Backup.
+end
+
+function PowerBank:saveData(transmit)
+    local modData = self:getIsoObject() and self:getIsoObject():getModData()
+    if modData then
+        modData.on = self.on
+        modData.batteries = self.batteries
+        modData.charge = self.charge
+        modData.maxcapacity = self.maxcapacity
+        modData.drain = self.drain
+        modData.npanels = self.npanels
+        modData.panels = self.panels
+        modData.lastHour = self.lastHour
+        modData.conGenerator = self.conGenerator
+        
+        if transmit then
+            self:getIsoObject():transmitModData()
+        end
     end
 end
 

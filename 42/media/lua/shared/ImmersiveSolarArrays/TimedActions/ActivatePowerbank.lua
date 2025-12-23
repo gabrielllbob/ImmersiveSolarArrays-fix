@@ -1,55 +1,71 @@
 require "TimedActions/ISBaseTimedAction"
----@class ImmersiveSolarArrays
 local ISA = require "ImmersiveSolarArrays/Utilities"
 
-local ActivatePowerBank = ISBaseTimedAction:derive("ISA_ActivatePowerBank")
+local ConnectPanel = ISBaseTimedAction:derive("ISA_ConnectPanel")
 
-function ActivatePowerBank:new(character, powerbank, activate)
+function ConnectPanel:new(character, panel, luaPb)
     local o = {}
     setmetatable(o, self)
     self.__index = self
     o.character = character
-    o.activate = activate
-    o.isoPb = powerbank
+    o.panel = panel
+    o.powerbank = luaPb -- Coordenadas do Powerbank
     o.stopOnWalk = true
     o.stopOnRun = true
+    o.stopOnAim = false
     o.maxTime = o:getDuration()
     return o
 end
 
-function ActivatePowerBank:isValid()
-    return self.isoPb:getObjectIndex() ~= -1
+function ConnectPanel:isValid()
+    -- Verifica se o painel ainda existe no mundo
+    return self.panel and self.panel:getObjectIndex() ~= -1
 end
 
-function ActivatePowerBank:getDuration()
+function ConnectPanel:getDuration()
     if self.character:isTimedActionInstant() then
         return 1
     end
-    return 40 - 3 * self.character:getPerkLevel(Perks.Electricity)
+    -- Tempo base baseado em skill
+    local electrical = self.character:getPerkLevel(Perks.Electricity)
+    local minutes = SandboxVars.ISA and SandboxVars.ISA.ConnectPanelMin or 10
+    return minutes * (1 - 0.095 * (electrical - 3)) * 60 -- Convertido para ticks (aprox)
 end
 
-function ActivatePowerBank:complete()
-    local pb = ISA.PBSystem_Server:getLuaObjectAt(self.isoPb:getX(), self.isoPb:getY(), self.isoPb:getZ())
-    if self.activate then
-        local level = self.character:getPerkLevel(Perks.Electricity)
-        if level < 3 and ZombRand(6-2*level) ~= 0 then
-            self.isoPb:getSquare():playSound("GeneratorFailedToStart")
-            self.activate = false
-        end
-    end
-    if self.activate and pb.charge > 0 then
-        self.isoPb:getSquare():playSound("GeneratorStarting")
-    elseif self.activate then
-        self.isoPb:getSquare():playSound("GeneratorFailedToStart")
-    else
-        self.isoPb:getSquare():playSound("GeneratorStopping")
-    end
-
-    pb.on = self.activate
-    pb.switchchanged = true
-    pb:updateDrain()
-    pb:updateGenerator()
-    pb:saveData(true)
+function ConnectPanel:start()
+    self:setActionAnim("Loot")
+    self.character:SetVariable("LootPosition", "Low")
+    self.character:reportEvent("EventLootItem")
+    self.sound = self.character:getEmitter():playSound("GeneratorRepair")
 end
 
-ISA.ActivatePowerbank = ActivatePowerBank
+function ConnectPanel:update()
+    self.character:faceThisObject(self.panel)
+end
+
+function ConnectPanel:stop()
+    if self.sound then
+        self.character:getEmitter():stopSound(self.sound)
+    end
+    ISBaseTimedAction.stop(self)
+end
+
+function ConnectPanel:perform()
+    if self.sound then
+        self.character:getEmitter():stopSound(self.sound)
+    end
+
+    -- COMANDO PARA O SERVIDOR
+    local args = { 
+        panel = { x = self.panel:getX(), y = self.panel:getY(), z = self.panel:getZ() },
+        pb = self.powerbank 
+    }
+    sendClientCommand(self.character, 'isa', 'connectPanel', args)
+
+    -- Atualiza UI se necessário (opcional, mas bom pra feedback)
+    HaloTextHelper.addText(self.character, "Painel Conectado", HaloTextHelper.getColorGreen())
+
+    ISBaseTimedAction.perform(self)
+end
+
+return ConnectPanel

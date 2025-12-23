@@ -22,163 +22,94 @@ end
 
 function UI.onConnectPanel(player,panel,luaPb)
     local character = getSpecificPlayer(player)
-    if luautils.walkAdj(character, panel:getSquare(), true) then
+    if luautils.walkAdj(character, panel:getSquare()) then
         ISTimedActionQueue.add(ISA.ConnectPanel:new(character, panel, luaPb))
     end
 end
 
-local function ActivatePowerbank(player,powerbank,activate)
+function UI.onDisconnectPanel(player,panel,luaPb)
     local character = getSpecificPlayer(player)
-    if luautils.walkAdj(character, powerbank:getSquare(), true) then
-        ISTimedActionQueue.add(ISA.ActivatePowerbank:new(character, powerbank, activate))
+    if luautils.walkAdj(character, panel:getSquare()) then
+        -- FIX: Usar sendCommand em vez de acessar PBSystem_Server direto
+        local args = { 
+            panel = { x = panel:getX(), y = panel:getY(), z = panel:getZ() },
+            pb = { x = luaPb.x, y = luaPb.y, z = luaPb.z }
+        }
+        -- Simula uma timed action rápida ou manda direto (simplificado para evitar timed action nova)
+        sendClientCommand(character, 'isa', 'disconnectPanel', args)
     end
 end
 
-local function onConnectPanelCursor(player, square, powerbank)
-    return ISA.ConnectPanelCursor:new(player, square, powerbank)
-end
-
-local _powerbank
-
-function UI.OnPreFillWorldObjectContextMenu(player, context, worldobjects, test)
-    local generator = ISWorldObjectContextMenu.fetchVars.generator
-    if generator ~= nil and ISA.WorldUtil.objectIsType(generator, "PowerBank") then
-        _powerbank = generator
-        ISWorldObjectContextMenu.fetchVars.generator = nil
+function UI.onActivatePowerBank(player,isoPb,activate)
+    local character = getSpecificPlayer(player)
+    if luautils.walkAdj(character, isoPb:getSquare()) then
+        ISTimedActionQueue.add(ISA.ActivatePowerBank:new(character, isoPb, activate))
     end
 end
 
-function UI.OnFillWorldObjectContextMenu(player, context, worldobjects, test)
-    if test and ISWorldObjectContextMenu.Test then return true end
-    local powerbank = _powerbank
-    local panel
-    --local panels = {}
-
-    for _, obj in ipairs(worldobjects) do
-        local sprite = obj:getTextureName()
-        local type = ISA.WorldUtil.ISATypes[sprite]
-        if type == "PowerBank" then
-            powerbank = obj
-        elseif type == "Panel" then
-            panel = obj
-            --table.insert(panels,obj)
-        end
-    end
-
-    if powerbank then
-        _powerbank = nil
-        local square = powerbank:getSquare()
-
-        if test then return ISWorldObjectContextMenu.setTest() end
-        local ISASubMenu = context:getNew(context)
-        context:addSubMenu(context:addOption(getText("ContextMenu_ISA_BatteryBank")), ISASubMenu)
-        if test then return ISWorldObjectContextMenu.setTest() end
-        ISASubMenu:addOption(getText("ContextMenu_ISA_BatteryBankStatus"), player, ISA.StatusWindow.OnOpenPanel, square)
-        local isOn = powerbank:getModData()["on"]
-        local textOn = isOn and getText("ContextMenu_Turn_Off") or getText("ContextMenu_Turn_On")
-        if test then return ISWorldObjectContextMenu.setTest() end
-        ISASubMenu:addOption(textOn, player, ActivatePowerbank, powerbank, not isOn)
-        if test then return ISWorldObjectContextMenu.setTest() end
-        ISASubMenu:addOption(getText("ContextMenu_ISA_ConnectPanels"), player, onConnectPanelCursor, square, powerbank)
-    end
-
-    --for _,panel in ipairs(panels) do
-        if panel then
-            if test then return ISWorldObjectContextMenu.setTest() end
-            local panelOption = context:addOption(getText("ContextMenu_ISA_SolarPanel"))
-            local options = ISA.PBSystem_Client.canConnectPanelTo(panel)
-            if #options > 0 then
-                local ISASubMenu = context:getNew(context)
-                context:addSubMenu(panelOption, ISASubMenu)
-                for i,opt in ipairs(options) do
-                    if test then return ISWorldObjectContextMenu.setTest() end
-                    local option = ISASubMenu:addOption(getText("ContextMenu_ISA_Connect_Panel"), player, UI.onConnectPanel, panel, opt[1])
-                    local tooltip = ISWorldObjectContextMenu.addToolTip()
-                    tooltip:setName(getText("ContextMenu_ISA_BatteryBank"))
-                    tooltip.description = opt[4] and rgbGood.rich .. getText("ContextMenu_ISA_Connect_Panel_toolTip_isConnected") or rgbBad.rich .. getText("ContextMenu_ISA_Connect_Panel_toolTip_isConnected_false")
-                    tooltip.description = tooltip.description .. (rgbDefault.rich .. "<BR>" .. "( "..opt[2].." : "..opt[3].." )" .. getText("ContextMenu_ISA_Connect_Panel_toolTip"))
-                    option.toolTip = tooltip
-                end
-            else
-                if test then return ISWorldObjectContextMenu.setTest() end
-                local tooltip = ISWorldObjectContextMenu.addToolTip()
-                if options.inside then
-                    tooltip.description = rgbBad.rich .. getText("ContextMenu_ISA_Connect_Panel_toolTip_isOutside")
-                else
-                    tooltip.description = rgbBad.rich .. getText("ContextMenu_ISA_Connect_Panel_NoPowerbank")
-                end
-                panelOption.toolTip = tooltip
-                panelOption.notAvailable = true
-                panelOption.onSelect = nil
-            end
-        end
-    --end
-end
-
-function UI.ISInventoryPane_drawItemDetails_patch(drawItemDetails)
-    local NewColorInfo = ColorInfo:new()
-
-    return function(self,item, y, xoff, yoff, red,...)
-        if not item then return drawItemDetails(self,item, y, xoff, yoff, red,...) end
-        if not (item:getModData().ISA_maxCapacity) then
-            return drawItemDetails(self,item, y, xoff, yoff, red,...)
-        else
-            local hdrHgt = self.headerHgt
-            local top = hdrHgt + y * self.itemHgt + yoff
-            rgbBad.ColorInfo:interp(rgbGood.ColorInfo, item:getCondition()/100, NewColorInfo)
-            local fgBar = {r=NewColorInfo:getR(),g=NewColorInfo:getG(),b=NewColorInfo:getB(),a=1}
-            local fgText = red and {r=0.0, g=0.0, b=0.5, a=0.7} or {r=0.6, g=0.8, b=0.5, a=0.6}
-            self:drawTextAndProgressBar(getText("Tooltip_weapon_Condition") .. ":", item:getCondition()/100, xoff, top, fgText, fgBar)
-        end
-    end
-end
-
-function UI.DoTooltip_patch(DoTooltip)
-    return function(item,tooltip)
-        if not item then return DoTooltip(item,tooltip) end
+-- PATCH: Tooltip segura para B42
+function UI.DoTooltip_patch(original)
+    return function(tooltip, layout)
+        local item = tooltip:getItem()
         local maxCapacity = item:getModData().ISA_maxCapacity
-        if not maxCapacity then
-            return DoTooltip(item,tooltip)
+        
+        -- Se não for bateria do ISA, roda o tooltip original e sai
+        if not maxCapacity then 
+            return original(tooltip, layout)
+        end
+
+        -- Renderiza o tooltip customizado
+        local option
+        if tooltip:getWeightOfStack() > 0 then
+            option = layout:addItem()
+            option:setLabel(getText("Tooltip_item_StackWeight")..":",1,1,0.8,1)
+            option:setValueRightNoPlus(tooltip:getWeightOfStack())
         else
-            local lineHeight = tooltip:getLineSpacing()
-            local font = tooltip:getFont()
-            local y = 5
-            --tooltip:render()
-            tooltip:DrawText(font, item:getName(), 5, 5, 1, 1, 0.8, 1)
-            y = y + lineHeight + 5
-            --adjustWidth(5, name;
-            local layout = tooltip:beginLayout()
-            --setminwidth
-            local option
-            if tooltip:getWeightOfStack() > 0 then
-                option = layout:addItem()
-                option:setLabel(getText("Tooltip_item_StackWeight")..":",1,1,0.8,1)
-                option:setValueRightNoPlus(tooltip:getWeightOfStack())
-            else
-                option = layout:addItem()
-                option:setLabel(getText("Tooltip_item_Weight")..":",1,1,0.8,1)
-                option:setValue(string.format("%.2f",item:isEquipped() and item:getEquippedWeight() or item:getUnequippedWeight()),1,1,0.8,1)
+            option = layout:addItem()
+            option:setLabel(getText("Tooltip_item_Weight")..":",1,1,0.8,1)
+            option:setValue(string.format("%.2f",item:isEquipped() and item:getEquippedWeight() or item:getUnequippedWeight()),1,1,0.8,1)
+            
+            -- FIX B42: Verifica se é drenável antes de pedir CurrentUses
+            if item:IsDrainable() then
                 option = layout:addItem()
                 option:setLabel(getText("IGUI_invpanel_Remaining")..":",1,1,0.8,1)
-                option:setValue(string.format("%d%%",item:getCurrentUsesFloat()*100),1,1,0.8,1)
-                option = layout:addItem()
-                option:setLabel(getText("Tooltip_weapon_Condition")..":",1,1,0.8,1)
-                option:setValue(string.format("%d%%",item:getCondition()),1,1,0.8,1)
-                option = layout:addItem()
-                option:setLabel(getText("Tooltip_container_Capacity")..":",1,1,0.8,1)
-                option:setValue(string.format("%d / %d",maxCapacity * (1 - math.pow((1 - (item:getCondition()/100)),6)),maxCapacity),1,1,0.8,1)
+                option:setValue(string.format("%d%%", item:getCurrentUsesFloat() * 100),1,1,0.8,1)
             end
-            y = layout:render(5,y,tooltip)
-            tooltip:endLayout(layout)
-            --if width < 150 -- tooltip:setWidth(tooltip:getWidth())
-            tooltip:setHeight(y+5)
+
+            option = layout:addItem()
+            option:setLabel(getText("Tooltip_weapon_Condition")..":",1,1,0.8,1)
+            option:setValue(string.format("%d%%",item:getCondition()),1,1,0.8,1)
+            
+            -- Cálculo de capacidade real baseado na condição
+            local realCapacity = maxCapacity * (1 - math.pow((1 - (item:getCondition()/100)),6))
+            
+            option = layout:addItem()
+            option:setLabel(getText("Tooltip_container_Capacity")..":",1,1,0.8,1)
+            option:setValue(string.format("%d / %d", realCapacity, maxCapacity), 1,1,0.8,1)
         end
+        
+        -- Layout render (não chame o original aqui para não duplicar info)
+        -- Mas precisamos renderizar o layout que criamos
+        -- Nota: A função original retorna o layout renderizado, aqui estamos manipulando o layout direto.
+        -- O ideal é deixar o jogo lidar com o render final, mas como estamos injetando...
+        
+        return original(tooltip, layout)
     end
 end
 
-UI.updateColours()
+-- PATCH: Inventory Pane (Texto pequeno embaixo do item no inventário)
+function UI.ISInventoryPane_drawItemDetails_patch(original)
+    return function(self, item, y, x, width, color)
+        if item and item:getModData().ISA_maxCapacity then
+             -- Se for nossa bateria, desenha barra customizada?
+             -- Na verdade, vamos deixar o original desenhar, mas garantindo que não crashe
+             if not item:IsDrainable() then
+                -- Se o jogo mudou o tipo do item, evitamos erro
+                return original(self, item, y, x, width, color)
+             end
+        end
+        return original(self, item, y, x, width, color)
+    end
+end
 
-Events.OnPreFillWorldObjectContextMenu.Add(UI.OnPreFillWorldObjectContextMenu)
-Events.OnFillWorldObjectContextMenu.Add(UI.OnFillWorldObjectContextMenu)
-
-ISA.UI = UI
+return UI

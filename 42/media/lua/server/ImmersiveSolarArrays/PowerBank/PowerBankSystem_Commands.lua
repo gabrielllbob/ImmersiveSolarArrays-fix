@@ -125,19 +125,14 @@ function Commands.troubleshoot(player, args)
     local objects = pb:getIsoObject():getSquare():getSpecialObjects()
     for i = objects:size() - 1, 0 , -1 do
         local object = objects:get(i)
-        if instanceof(object, "IsoGenerator") and (object:getSprite() == nil or object:getModData().generatorFullType == "ISA.PowerBank_test") then
-            object:remove()
+        -- FIX B42: Verificação mais segura
+        if instanceof(object, "IsoGenerator") and (object:getSprite() == nil or (object:getModData() and object:getModData().generatorFullType == "ISA.PowerBank_test")) then
+            object:remove() 
+            -- Removido o object:setFuel(0) pois é desnecessário já que estamos removendo o objeto
         end
     end
-
-    -- remove old attached sprites
-    local attached = isoPB:getAttachedAnimSprite()
-    if attached then
-        attached:clear()
-    end
-
-    pb:calculateBatteryStats(isoPB:getContainer())
-    pb:updateSprite()
+    
+    pb:checkPanels()
     pb:saveData(true)
 end
 

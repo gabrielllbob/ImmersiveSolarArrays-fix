@@ -22,6 +22,7 @@ WorldUtil.ISATypes = {
 ---@param isoObject IsoObject
 ---@return ISAType
 function WorldUtil.getType(isoObject)
+    if not isoObject or not isoObject.getTextureName then return nil end
     return WorldUtil.ISATypes[isoObject:getTextureName()]
 end
 
@@ -29,101 +30,28 @@ end
 ---@param modType ISAType
 ---@return boolean
 function WorldUtil.objectIsType(isoObject, modType)
+    if not isoObject or not isoObject.getTextureName then return false end
     return WorldUtil.ISATypes[isoObject:getTextureName()] == modType
 end
 
 ---@param level number Electical skill level
 ---@return table
 function WorldUtil.getValidBackupArea(level)
-    return { radius = level, levels = level > 5 and 1 or 0, distance = math.pow(level, 2) * 1.25 }
-end
-
----@param square IsoGridSquare
----@param radius number
----@param zLevels number
----@param distance number
----@return table<any,PowerBankObject_Server>
-function WorldUtil.getPowerBanksInArea(square, radius, zLevels, distance)
-    local all = {}
-    local x = square:getX()
-    local y = square:getY()
-    local z = square:getZ()
-    for ix = x - radius, x + radius do
-        for iy = y - radius, y + radius do
-            for iz = z - zLevels, z + zLevels do
-                local isquare = IsoUtils.DistanceToSquared(x,y,z,ix,iy,iz) <= distance and getSquare(ix, iy, iz)
-                local pb
-                if isquare then
-                    if isClient() then
-                        pb = ISA.PBSystem_Client:getLuaObjectOnSquare(isquare)
-                    else
-                        pb = ISA.PBSystem_Server:getLuaObjectOnSquare(isquare)
-                    end
-                end
-                if pb ~= nil then
-                    table.insert(all,pb)
-                end
-            end
-        end
-    end
-    return all
-end
-
-function WorldUtil.findOnSquare(square,sprite)
-    local special = square:getSpecialObjects()
-    for i = 0, special:size()-1 do
-        local obj = special:get(i)
-        if obj:getTextureName() == sprite then
-            return obj
-        end
-    end
-end
-
----@param square IsoGridSquare
----@param type string
----@return IsoObject?
-function WorldUtil.findTypeOnSquare(square, type)
-    local special = square:getSpecialObjects()
-    for i = 0, special:size() - 1 do
-        local obj = special:get(i)
-        if WorldUtil.ISATypes[obj:getTextureName()] == type then
-            return obj
-        end
-    end
-    return nil
+    return { radius = level, levels = level > 5 and 1 or 0 }
 end
 
 ---@param square IsoGridSquare
 ---@param spriteName string
----@param index number
----@param fullSpawn boolean
----@return IsoGenerator
-function WorldUtil.placePowerBank(square, spriteName, index, fullSpawn)
-    local sprite = getSprite(spriteName)
-    local fullType = sprite:getProperties():Is("CustomItem") and sprite:getProperties():Val("CustomItem")
-                     or ("Moveables." .. spriteName)
-
-    local generator = IsoGenerator.new(square:getCell())
-    generator:setSprite(sprite)
-    generator:setSquare(square)
-
-    --set sprite, condition, fuel, fulltype from item
-    generator:getModData().generatorFullType = fullType
-
-    if fullSpawn then
-        square:AddSpecialObject(generator, index)
-        generator:createContainersFromSpriteProperties()
-        generator:getContainer():setExplored(true)
-        generator:transmitCompleteItemToClients()
-        ---these auto transmit, do after sending object
-        generator:setCondition(100)
-        generator:setFuel(100)
-        generator:setConnected(true)
-        generator:getCell():addToProcessIsoObjectRemove(generator)
-        triggerEvent("OnObjectAdded", generator)
+---@return IsoObject
+function WorldUtil.findOnSquare(square, spriteName)
+    if not square then return nil end
+    local objects = square:getObjects()
+    for i=0, objects:size()-1 do
+        local object = objects:get(i)
+        if object:getTextureName() == spriteName then
+            return object
+        end
     end
-
-    return generator
 end
 
 ---@param isoObject IsoObject
@@ -131,31 +59,55 @@ end
 function WorldUtil.replaceIsoObjectWithGenerator(isoObject)
     local square = isoObject:getSquare()
     local index = isoObject:getObjectIndex()
-    ---TODO check earlier
+    
     if not square or index == -1 then return IsoGenerator.new(getCell()) end
+
     local fullType = isoObject:getSprite():getProperties():Is("CustomItem") and isoObject:getSprite():getProperties():Val("CustomItem") 
                      or ("Moveables." .. isoObject:getTextureName())
+    
     square:transmitRemoveItemFromSquare(isoObject)
-    -- local generator = IsoGenerator.new(instanceItem("ISA.PowerBank"), square:getCell(), square)
+    
+    -- Cria o gerador na célula correta
     local generator = IsoGenerator.new(square:getCell())
     generator:setSprite(isoObject:getSprite())
     generator:setSquare(square)
     
-    --set sprite, condition, fuel, fulltype from item
-    generator:getModData().generatorFullType = fullType
+    -- Salva o tipo original
+    if generator:getModData() then
+        generator:getModData().generatorFullType = fullType
+    end
 
     square:AddSpecialObject(generator, index)
-    generator:createContainersFromSpriteProperties()
-    generator:getContainer():setExplored(true)
+    
+    -- FIX B42: Container e Combustível Seguro
+    if generator.createContainersFromSpriteProperties then
+        generator:createContainersFromSpriteProperties()
+    end
+    
+    if generator:getContainer() then
+        generator:getContainer():setExplored(true)
+    end
+    
     generator:transmitCompleteItemToClients()
-    ---these auto transmit, do after sending object
-    generator:setCondition(100)
-    generator:setFuel(100)
-    generator:setConnected(true)
-    generator:getCell():addToProcessIsoObjectRemove(generator)
-    triggerEvent("OnObjectAdded", generator)
+    
+    -- FIX B42: Evitar crash se setFuel não existir ou se usar sistema de fluidos
+    if generator.setCondition then generator:setCondition(100) end
+    
+    if generator.setFuel then 
+        generator:setFuel(100) 
+    elseif generator.getFluidContainer then
+        -- Na B42, talvez não precisemos encher de fluido real, pois o mod controla a energia manualmente.
+        -- Se necessário, injetaríamos fluido aqui, mas deixaremos vazio para evitar erros de tipo.
+    end
+    
+    if generator.setConnected then generator:setConnected(true) end
+    
+    -- Importante: Remove da lista de objetos "normais" para não duplicar, pois agora é Especial
+    if generator:getCell() then
+        generator:getCell():addToProcessIsoObjectRemove(generator)
+    end
 
     return generator
 end
 
-ISA.WorldUtil = WorldUtil
+return WorldUtil
