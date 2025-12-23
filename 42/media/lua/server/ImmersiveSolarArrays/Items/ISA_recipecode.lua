@@ -13,7 +13,6 @@ local function roundToNumber(x, n)
 	return math.ceil(x / n - 0.5) * n
 end
 
---- Função de decaimento para baterias
 local function factor(a, b)
     return 1 - a * math.max(0, (1.3 - b) / 0.5)
 end
@@ -31,20 +30,23 @@ local function addOrDrop(character, item)
 	end
 end
 
+-- [[ FIX B42: Lógica de Aceitação de Bateria ]]
 function AcceptItemFunction.ISA_Batteries(container, item)
-    -- Verifica se o tipo do item existe na nossa tabela de definições
-    return ISA.BatteryDefinitions[item:getFullType()] ~= nil
+    -- 1. O item existe na nossa lista permitida?
+    if not ISA.BatteryDefinitions[item:getFullType()] then
+        return false
+    end
+    -- 2. É um item drenável? (Evita bugs com items convertidos em fluido)
+    if not item:IsDrainable() then
+        return false
+    end
+    return true
 end
-
--- Definição de baterias compatíveis (Exemplo)
-RecipeDef.carBatteries = { ["Base.CarBattery1"] = true, ["Base.CarBattery2"] = true, ["Base.CarBattery3"] = true }
-
--- ... (Mantenha as funções de criação de bateria WireCarBattery/Unwire aqui, se houver) ...
 
 RecipeDef.hiddenExpandedRecipes = {"ISA.Make Solar Panel","ISA.Make Inverter"}
 
 function RecipeDef.OnInitGlobalModData()
-    -- FIX: Ler SandboxVars aqui dentro, quando já é seguro
+    -- [[ FIX: Leitura segura do Sandbox ]]
     local Sandbox = SandboxVars.ISA
     if Sandbox and Sandbox.enableExpandedRecipes then
 		local manager = getScriptManager()
@@ -57,7 +59,6 @@ function RecipeDef.OnInitGlobalModData()
 	end
 end
 
--- Registra o evento para rodar a função acima
 Events.OnInitGlobalModData.Add(RecipeDef.OnInitGlobalModData)
 
 return RecipeDef

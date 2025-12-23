@@ -2,13 +2,13 @@
 ---@field PBSystem_Server PowerbankSystem_Server
 local ISA = {}
 
--- DEFINIÇÕES OBRIGATÓRIAS PARA O MOD FUNCIONAR
+-- [[ NOVO: Definições de Bateria para a B42 ]]
 ISA.BatteryDefinitions = {
     ["ISA.DeepCycleBattery"] = { maxCapacity = 200, degrade = 0.033 },
     ["ISA.SuperBattery"]     = { maxCapacity = 400, degrade = 0.033 },
     ["ISA.DIYBattery"]       = { maxCapacity = 200, degrade = 0.125 },
     ["ISA.WiredCarBattery"]  = { maxCapacity = 50,  degrade = 8 },
-    -- Compatibilidade com Vanilla (caso use baterias normais modificadas)
+    -- Compatibilidade com baterias vanilla (caso mods mudem o tipo)
     ["Base.CarBattery1"]     = { maxCapacity = 50,  degrade = 8 },
     ["Base.CarBattery2"]     = { maxCapacity = 50,  degrade = 8 },
     ["Base.CarBattery3"]     = { maxCapacity = 50,  degrade = 8 }
@@ -19,10 +19,10 @@ function ISA.getBatteryDetails(item)
     return ISA.BatteryDefinitions[item:getFullType()]
 end
 
--- Helpers
+-- Helpers de sistema
 ISA.patchClassMetaMethod = function(class, methodName, createPatch)
     local metatable = __classmetatables[class]
-    if not metatable then return end -- Falha silenciosa é melhor que crash
+    if not metatable then return end
     local metatable__index = metatable.__index
     if not metatable__index then return end
     
@@ -67,7 +67,7 @@ end
 
 function ISA.isDayTime()
     local time = getGameTime():getTimeOfDay()
-    return time > 7 and time < 19 -- Simplificado para garantir funcionamento
+    return time > 7 and time < 19
 end
 
 return ISA
